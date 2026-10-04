@@ -1,0 +1,100 @@
+[project]
+name = "inferroute"
+version = "0.1.0"
+description = "OpenAI-compatible LLM inference gateway, intelligent model router and benchmarking platform."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "InferRoute Authors" }]
+keywords = ["llm", "inference", "gateway", "router", "llama.cpp", "vllm", "benchmark"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn>=0.34,<1.0",
+    "pydantic>=2.9,<3.0",
+    "pydantic-settings>=2.6,<3.0",
+    "httpx>=0.28,<1.0",
+    "pyyaml>=6.0,<7.0",
+    "prometheus-client>=0.21,<1.0",
+    "opentelemetry-api>=1.28,<2.0",
+    "opentelemetry-sdk>=1.28,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.28,<2.0",
+    "pynvml>=11.5,<13.0",
+    "psutil>=6.0,<9.0",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0,<7.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<2.0",
+    "ruff>=0.8,<1.0",
+    "mypy>=1.13,<2.0",
+    "types-pyyaml>=6.0",
+]
+
+[project.scripts]
+inferroute = "inferroute.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["inferroute"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "SIM",      # simplify
+    "C4",       # comprehensions
+    "RUF",      # ruff-specific
+    "ASYNC",    # async bugs
+]
+ignore = [
+    "E501",     # line length handled by formatter; long strings/URLs exist
+    "SIM108",   # ternary is not always clearer
+    "B008",     # FastAPI Depends() in defaults
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["inferroute"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["pynvml", "prometheus_client", "yaml", "psutil", "uvicorn.*", "opentelemetry.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning:opentelemetry.*",
+]

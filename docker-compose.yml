@@ -1,0 +1,91 @@
+# InferRoute local stack.
+#
+#   docker compose up gateway                 # just the gateway (mock providers)
+#   docker compose --profile llama up         # + llama.cpp backend
+#   docker compose --profile vllm up          # + vLLM backend (NVIDIA runtime)
+#   docker compose --profile observability up # + Prometheus + Grafana
+#
+# All inference backends ship DISABLED in configs/gateway.yaml; when their
+# profiles are up, point the gateway at them via INFERRROUTE_* env or by
+# flipping `enabled: true` on the provider entry.
+
+services:
+  gateway:
+    build: .
+    image: inferroute:latest
+    ports:
+      - "8000:8000"
+    environment:
+      INFERRROUTE_API_KEYS: ${INFERRROUTE_API_KEYS:-}
+      INFERRROUTE_REMOTE_ENDPOINT: ${INFERRROUTE_REMOTE_ENDPOINT:-}
+      REMOTE_API_KEY: ${REMOTE_API_KEY:-}
+      INFERRROUTE_CACHE_ENABLED: ${INFERRROUTE_CACHE_ENABLED:-false}
+      INFERRROUTE_OTLP_ENDPOINT: ${INFERRROUTE_OTLP_ENDPOINT:-}
+    volumes:
+      - inferroute-data:/app/data
+    restart: unless-stopped
+
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["llama"]
+    ports:
+      - "8081:8081"
+    volumes:
+      - ${LLAMA_MODEL_PATH:?set LLAMA_MODEL_PATH to a .gguf file}:/models/model.gguf:ro
+    command: >
+      -m /models/model.gguf
+      --host 0.0.0.0 --port 8081
+      -c 8192 -ngl 99 --parallel 4
+    restart: unless-stopped
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    profiles: ["vllm"]
+    ports:
+      - "8001:8001"
+    volumes:
+      - ${VLLM_MODEL:?set VLLM_MODEL to an HF model id}:/models
+      - huggingface-cache:/root/.cache/huggingface
+    command: >
+      --model ${VLLM_MODEL}
+      --served-model-name local-vllm
+      --host 0.0.0.0 --port 8001
+      --max-model-len 8192
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["observability"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["observability"]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./dashboard/grafana:/etc/grafana/provisioning/dashboards-json:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  inferroute-data:
+  grafana-data:
+  huggingface-cache:

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Env & secrets
+.env
+*.env.local
+
+# SQLite data
+data/
+*.db
+*.sqlite3
+
+# Benchmark raw outputs (results are committed; transient scratch is not)
+benchmarks/results/*.lock
+
+# OS
+.DS_Store
+Thumbs.db

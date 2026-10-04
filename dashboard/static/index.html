@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InferRoute Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --border: #26304a; --text: #dbe2f0; --muted: #8a94ab;
+    --accent: #5b8def; --ok: #3fb27f; --warn: #d9a13b; --bad: #d95c5c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex;
+           align-items: baseline; gap: 16px; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+         gap: 16px; padding: 16px 24px; max-width: 1500px; margin: 0 auto; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+            padding: 14px 16px; overflow: hidden; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px;
+               color: var(--muted); margin: 0 0 10px 0; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .pill.ok { background: rgba(63,178,127,.15); color: var(--ok); }
+  .pill.bad { background: rgba(217,92,92,.15); color: var(--bad); }
+  .pill.warn { background: rgba(217,161,59,.15); color: var(--warn); }
+  .pill.off { background: rgba(138,148,171,.15); color: var(--muted); }
+  .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .stat { flex: 1; min-width: 90px; background: var(--bg); border: 1px solid var(--border);
+          border-radius: 8px; padding: 8px 10px; }
+  .stat .v { font-size: 20px; font-weight: 600; }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .trace { font-family: Consolas, monospace; font-size: 11px; color: var(--muted);
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  footer { color: var(--muted); font-size: 11px; padding: 10px 24px; }
+  .refresh-note { margin-left: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>InferRoute</h1>
+  <span class="sub" id="version"></span>
+  <span class="sub refresh-note">auto-refresh 3s · <span id="clock"></span></span>
+</header>
+<main>
+  <section id="sec-health">
+    <h2>Gateway</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="v" id="st-uptime">–</div><div class="l">uptime (s)</div></div>
+      <div class="stat"><div class="v" id="st-reqs">–</div><div class="l">req / hour</div></div>
+      <div class="stat"><div class="v" id="st-err">–</div><div class="l">errors / hour</div></div>
+      <div class="stat"><div class="v" id="st-queue">–</div><div class="l">queue (act/wait)</div></div>
+    </div>
+    <div class="kv"><span class="k">GPU</span><span id="gpu-line">–</span></div>
+    <div class="kv"><span class="k">cache</span><span id="cache-line">–</span></div>
+  </section>
+
+  <section id="sec-providers">
+    <h2>Providers</h2>
+    <table><thead><tr><th>name</th><th>kind</th><th>health</th><th>circuit</th><th>queue</th></tr></thead>
+    <tbody id="providers-body"></tbody></table>
+  </section>
+
+  <section id="sec-models">
+    <h2>Models</h2>
+    <table><thead><tr><th>model</th><th>provider</th><th>ctx</th><th>tier</th><th>privacy</th><th>caps</th></tr></thead>
+    <tbody id="models-body"></tbody></table>
+  </section>
+
+  <section id="sec-routing" style="grid-column: 1 / -1;">
+    <h2>Recent routing decisions</h2>
+    <table><thead><tr><th>time</th><th>strategy</th><th>task</th><th>selected</th><th>prompt tok</th><th>trace</th></tr></thead>
+    <tbody id="routing-body"></tbody></table>
+  </section>
+</main>
+<footer>
+  Operational demo UI — the engineering surface is the API, Prometheus metrics and OpenTelemetry traces.
+</footer>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtMs = (v) => (v == null ? "–" : Number(v).toFixed(0) + " ms");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+
+function healthPill(state) {
+  if (state === true) return '<span class="pill ok">healthy</span>';
+  if (state === false) return '<span class="pill bad">unhealthy</span>';
+  return '<span class="pill off">unknown</span>';
+}
+function circuitPill(state) {
+  const cls = state === "closed" ? "ok" : state === "open" ? "bad" : "warn";
+  return `<span class="pill ${cls}">${esc(state)}</span>`;
+}
+
+async function refresh() {
+  $("clock").textContent = new Date().toLocaleTimeString();
+  try {
+    const [health, providers, models, routing, stats] = await Promise.all([
+      getJSON("/health"), getJSON("/v1/providers"), getJSON("/v1/models"),
+      getJSON("/v1/routing-decisions?limit=20"), getJSON("/v1/stats"),
+    ]);
+    $("version").textContent = "v" + health.version + " · " + health.status;
+
+    $("st-uptime").textContent = health.uptime_s.toFixed(0);
+    $("st-reqs").textContent = stats.requests.requests_last_hour ?? "0";
+    $("st-err").textContent = stats.requests.errors_last_hour ?? "0";
+    $("st-queue").textContent = `${stats.queue.active}/${stats.queue.waiting}`;
+    const g = stats.gpu || {};
+    $("gpu-line").textContent = g.available && g.gpus && g.gpus.length
+      ? `${g.gpus[0].name} · VRAM ${g.gpus[0].mem_used_mb?.toFixed(0)}/${g.gpus[0].mem_total_mb?.toFixed(0)} MB · ${g.gpus[0].util_pct}% · ${g.gpus[0].temp_c}°C`
+      : ("unavailable" + (g.reason ? ` (${g.reason})` : ""));
+    const c = stats.cache || {};
+    $("cache-line").textContent = c.enabled ? `${c.hits} hits / ${c.misses} misses` : "disabled";
+
+    $("providers-body").innerHTML = (providers.providers || []).map(p => `
+      <tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td>
+      <td>${healthPill(p.healthy)}</td><td>${circuitPill(p.circuit_state)}</td>
+      <td>${p.queue_depth ?? "–"}</td></tr>`).join("");
+
+    $("models-body").innerHTML = (models.data || []).map(m => {
+      const i = m.inferroute || {};
+      return `<tr><td>${esc(m.id)}</td><td>${esc(m.owned_by?.replace("inferroute.", ""))}</td>
+        <td>${i.context_window ?? "–"}</td><td>${i.quality_tier ?? "–"}</td>
+        <td>${esc(i.privacy)}</td><td class="trace">${esc((i.capabilities || []).join(", "))}</td></tr>`;
+    }).join("");
+
+    $("routing-body").innerHTML = (routing.data || []).map(d => {
+      const trace = (d.trace || []).map(t =>
+        `[${t.status}] ${t.model}: ${t.reason}`).join("  ·  ");
+      const t = new Date(d.ts * 1000).toLocaleTimeString();
+      return `<tr><td>${t}</td><td>${esc(d.strategy)}</td><td>${esc(d.task)}</td>
+        <td>${esc(d.selected_model ?? "none")}</td><td>${d.estimated_prompt_tokens ?? "–"}</td>
+        <td class="trace" title="${esc(trace)}">${esc(trace)}</td></tr>`;
+    }).join("") || '<tr><td colspan="6" style="color:var(--muted)">no requests yet</td></tr>';
+  } catch (err) {
+    $("version").textContent = "gateway unreachable: " + err.message;
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

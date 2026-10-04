@@ -1,0 +1,228 @@
+{
+  "run_id": "routebench-20261003-215346-2f62",
+  "kind": "routing_bench",
+  "timestamp_utc": "2026-10-03T16:26:13Z",
+  "backend": {
+    "mode": "http",
+    "gateway_config_hash": null,
+    "note": "inference simulated by the deterministic mock backend; this measures routing behavior over the real gateway stack, not model quality"
+  },
+  "hardware": {
+    "os": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.10",
+    "cpu": {
+      "name": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+      "logical_cores": 24,
+      "arch": "AMD64"
+    },
+    "ram_total_gb": 63.12,
+    "gpu": {
+      "available": true,
+      "reason": "",
+      "driver_version": "610.71",
+      "gpus": [
+        {
+          "index": 0,
+          "name": "NVIDIA GeForce RTX 5080 Laptop GPU",
+          "mem_used_mb": 15699.01171875,
+          "mem_total_mb": 16303.0,
+          "util_pct": 100.0,
+          "temp_c": 87.0,
+          "power_w": 82.709,
+          "power_limit_w": 109.436
+        }
+      ]
+    },
+    "hostname": "soural",
+    "packages": {
+      "inferroute": "0.1.0",
+      "fastapi": "0.142.2",
+      "httpx": "0.28.1",
+      "pydantic": "2.13.5",
+      "uvicorn": "0.54.0"
+    }
+  },
+  "workload": {
+    "requests": 60,
+    "concurrency": 4,
+    "mix": [
+      {
+        "task": "extraction",
+        "share": 0.25
+      },
+      {
+        "task": "reasoning",
+        "share": 0.25
+      },
+      {
+        "task": "coding",
+        "share": 0.25
+      },
+      {
+        "task": "summarization",
+        "share": 0.25
+      }
+    ],
+    "seed": 7
+  },
+  "arm_a": {
+    "arm": "baseline_fixed_model",
+    "model": "local-reasoner",
+    "strategy": null,
+    "requests": 60,
+    "errors": 0,
+    "error_rate": 0.0,
+    "total_ms": {
+      "mean": 5201.68,
+      "p50": 4892.79,
+      "p95": 8259.77,
+      "p99": 8268.2
+    },
+    "ttft_ms": {
+      "mean": 432.6,
+      "p95": 448.71
+    },
+    "prompt_tokens": 10500,
+    "completion_tokens": 5880,
+    "estimated_cost_usd": 0.0,
+    "cost_priced": false,
+    "per_task": {
+      "coding": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 6286.65,
+        "ttft_ms_mean": 433.96,
+        "completion_tokens": 1800,
+        "estimated_cost_usd": 0.0
+      },
+      "extraction": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 2743.54,
+        "ttft_ms_mean": 426.61,
+        "completion_tokens": 720,
+        "estimated_cost_usd": 0.0
+      },
+      "reasoning": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 8219.73,
+        "ttft_ms_mean": 441.21,
+        "completion_tokens": 2400,
+        "estimated_cost_usd": 0.0
+      },
+      "summarization": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 3556.79,
+        "ttft_ms_mean": 428.6,
+        "completion_tokens": 960,
+        "estimated_cost_usd": 0.0
+      }
+    }
+  },
+  "arm_b": {
+    "arm": "intelligent_routing",
+    "model": "auto",
+    "strategy": "task_aware",
+    "requests": 60,
+    "errors": 0,
+    "error_rate": 0.0,
+    "total_ms": {
+      "mean": 3792.69,
+      "p50": 2491.07,
+      "p95": 8320.27,
+      "p99": 8337.95
+    },
+    "ttft_ms": {
+      "mean": 198.26,
+      "p95": 441.36
+    },
+    "prompt_tokens": 10500,
+    "completion_tokens": 5880,
+    "estimated_cost_usd": 0.0,
+    "cost_priced": false,
+    "per_task": {
+      "coding": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 3833.89,
+        "ttft_ms_mean": 166.22,
+        "completion_tokens": 1800,
+        "estimated_cost_usd": 0.0
+      },
+      "extraction": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 1329.42,
+        "ttft_ms_mean": 104.8,
+        "completion_tokens": 720,
+        "estimated_cost_usd": 0.0
+      },
+      "reasoning": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 8264.33,
+        "ttft_ms_mean": 430.54,
+        "completion_tokens": 2400,
+        "estimated_cost_usd": 0.0
+      },
+      "summarization": {
+        "requests": 15,
+        "errors": 0,
+        "total_ms_mean": 1743.1,
+        "ttft_ms_mean": 91.49,
+        "completion_tokens": 960,
+        "estimated_cost_usd": 0.0
+      }
+    }
+  },
+  "comparison": {
+    "mean_total_ms": {
+      "metric": "mean_total_ms",
+      "baseline": 5201.68,
+      "routing": 3792.69,
+      "delta": -1408.99,
+      "winner": "routing"
+    },
+    "p95_total_ms": {
+      "metric": "p95_total_ms",
+      "baseline": 8259.77,
+      "routing": 8320.27,
+      "delta": 60.5,
+      "winner": "baseline"
+    },
+    "p99_total_ms": {
+      "metric": "p99_total_ms",
+      "baseline": 8268.2,
+      "routing": 8337.95,
+      "delta": 69.75,
+      "winner": "baseline"
+    },
+    "mean_ttft_ms": {
+      "metric": "mean_ttft_ms",
+      "baseline": 432.6,
+      "routing": 198.26,
+      "delta": -234.34,
+      "winner": "routing"
+    },
+    "error_rate": {
+      "metric": "error_rate",
+      "baseline": 0.0,
+      "routing": 0.0,
+      "delta": 0.0,
+      "winner": "tie"
+    },
+    "estimated_cost_usd": {
+      "metric": "estimated_cost_usd",
+      "baseline": 0.0,
+      "routing": 0.0,
+      "delta": 0.0,
+      "winner": "tie"
+    }
+  },
+  "artifacts": {
+    "summary_json": "benchmarks\\results\\routebench-20261003-215346-2f62\\summary.json",
+    "report_md": "benchmarks\\reports\\routebench-20261003-215346-2f62.md"
+  }
+}

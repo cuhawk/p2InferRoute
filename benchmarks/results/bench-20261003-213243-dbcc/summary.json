@@ -1,0 +1,433 @@
+{
+  "run_id": "bench-20261003-213243-dbcc",
+  "kind": "bench",
+  "timestamp_utc": "2026-10-03T16:10:20Z",
+  "backend": {
+    "mode": "http",
+    "gateway_config_hash": null,
+    "note": ""
+  },
+  "ttft_itl_note": "ttft/itl measured client-side over real HTTP streaming",
+  "hardware": {
+    "os": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.10",
+    "cpu": {
+      "name": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+      "logical_cores": 24,
+      "arch": "AMD64"
+    },
+    "ram_total_gb": 63.12,
+    "gpu": {
+      "available": true,
+      "reason": "",
+      "driver_version": "610.71",
+      "gpus": [
+        {
+          "index": 0,
+          "name": "NVIDIA GeForce RTX 5080 Laptop GPU",
+          "mem_used_mb": 15481.01171875,
+          "mem_total_mb": 16303.0,
+          "util_pct": 99.0,
+          "temp_c": 86.0,
+          "power_w": 86.381,
+          "power_limit_w": 109.298
+        }
+      ]
+    },
+    "hostname": "soural",
+    "packages": {
+      "inferroute": "0.1.0",
+      "fastapi": "0.142.2",
+      "httpx": "0.28.1",
+      "pydantic": "2.13.5",
+      "uvicorn": "0.54.0"
+    }
+  },
+  "suite": {
+    "requests_per_cell": 50,
+    "warmup_per_cell": 5,
+    "seed": 42,
+    "cells": [
+      {
+        "label": "models-fast",
+        "model": "local-mini",
+        "strategy": null,
+        "task": null,
+        "concurrency": 1,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      {
+        "label": "models-fast",
+        "model": "local-mini",
+        "strategy": null,
+        "task": null,
+        "concurrency": 4,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      {
+        "label": "models-fast",
+        "model": "local-coder",
+        "strategy": null,
+        "task": null,
+        "concurrency": 1,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      {
+        "label": "models-fast",
+        "model": "local-coder",
+        "strategy": null,
+        "task": null,
+        "concurrency": 4,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      }
+    ]
+  },
+  "gpu_samples": {
+    "available": true,
+    "gpu_name": "NVIDIA GeForce RTX 5080 Laptop GPU",
+    "mem_used_mb": {
+      "mean": 12972.32,
+      "max": 15481.01,
+      "min": 657.01
+    },
+    "util_pct": {
+      "mean": 66.36,
+      "max": 100.0,
+      "min": 0.0
+    },
+    "temp_c": {
+      "mean": 76.75,
+      "max": 88.0,
+      "min": 56.0
+    },
+    "power_w": {
+      "mean": 69.46,
+      "max": 117.97,
+      "min": 6.95
+    },
+    "sample_count": 457
+  },
+  "results": [
+    {
+      "cell": {
+        "label": "models-fast",
+        "model": "local-mini",
+        "strategy": null,
+        "task": null,
+        "concurrency": 1,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      "summary": {
+        "label": "models-fast",
+        "model": "local-mini",
+        "strategy": null,
+        "task": null,
+        "concurrency": 1,
+        "requests_configured": 50,
+        "warmup": 5,
+        "stream": true,
+        "measured_requests": 45,
+        "elapsed_s": 178.986,
+        "error_count": 0,
+        "error_rate": 0.0,
+        "requests_per_s": 0.251,
+        "total_ms": {
+          "count": 45,
+          "mean": 3558.146,
+          "p50": 3547.918,
+          "p95": 3688.687,
+          "p99": 3736.742,
+          "min": 3442.221,
+          "max": 3748.891,
+          "stddev": 68.933
+        },
+        "ttft_ms": {
+          "count": 45,
+          "mean": 98.95,
+          "p50": 99.385,
+          "p95": 110.376,
+          "p99": 114.003,
+          "min": 78.962,
+          "max": 115.896,
+          "stddev": 7.812
+        },
+        "itl_mean_ms": {
+          "count": 45,
+          "mean": 27.192,
+          "p50": 27.087,
+          "p95": 28.188,
+          "p99": 28.539,
+          "min": 26.248,
+          "max": 28.613,
+          "stddev": 0.529
+        },
+        "output_tokens_per_s": 32.18,
+        "prompt_tokens_total": 2880,
+        "completion_tokens_total": 5760,
+        "fallback_events": 0,
+        "cache_hits": 0,
+        "estimated_cost_usd": 0.0,
+        "cost_priced": false,
+        "simulated_inference": true,
+        "models_used": [
+          "local-mini"
+        ],
+        "providers_used": [
+          "mock-fast"
+        ]
+      }
+    },
+    {
+      "cell": {
+        "label": "models-fast",
+        "model": "local-mini",
+        "strategy": null,
+        "task": null,
+        "concurrency": 4,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      "summary": {
+        "label": "models-fast",
+        "model": "local-mini",
+        "strategy": null,
+        "task": null,
+        "concurrency": 4,
+        "requests_configured": 50,
+        "warmup": 5,
+        "stream": true,
+        "measured_requests": 45,
+        "elapsed_s": 46.064,
+        "error_count": 0,
+        "error_rate": 0.0,
+        "requests_per_s": 0.977,
+        "total_ms": {
+          "count": 45,
+          "mean": 3496.412,
+          "p50": 3501.795,
+          "p95": 3577.408,
+          "p99": 3596.291,
+          "min": 3320.675,
+          "max": 3608.946,
+          "stddev": 58.822
+        },
+        "ttft_ms": {
+          "count": 45,
+          "mean": 97.412,
+          "p50": 96.688,
+          "p95": 114.453,
+          "p99": 118.637,
+          "min": 72.199,
+          "max": 120.721,
+          "stddev": 10.996
+        },
+        "itl_mean_ms": {
+          "count": 45,
+          "mean": 26.715,
+          "p50": 26.768,
+          "p95": 27.375,
+          "p99": 27.447,
+          "min": 25.353,
+          "max": 27.489,
+          "stddev": 0.456
+        },
+        "output_tokens_per_s": 125.04,
+        "prompt_tokens_total": 2880,
+        "completion_tokens_total": 5760,
+        "fallback_events": 0,
+        "cache_hits": 0,
+        "estimated_cost_usd": 0.0,
+        "cost_priced": false,
+        "simulated_inference": true,
+        "models_used": [
+          "local-mini"
+        ],
+        "providers_used": [
+          "mock-fast"
+        ]
+      }
+    },
+    {
+      "cell": {
+        "label": "models-fast",
+        "model": "local-coder",
+        "strategy": null,
+        "task": null,
+        "concurrency": 1,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      "summary": {
+        "label": "models-fast",
+        "model": "local-coder",
+        "strategy": null,
+        "task": null,
+        "concurrency": 1,
+        "requests_configured": 50,
+        "warmup": 5,
+        "stream": true,
+        "measured_requests": 45,
+        "elapsed_s": 182.869,
+        "error_count": 0,
+        "error_rate": 0.0,
+        "requests_per_s": 0.246,
+        "total_ms": {
+          "count": 45,
+          "mean": 3661.221,
+          "p50": 3567.689,
+          "p95": 4075.189,
+          "p99": 4098.143,
+          "min": 3457.82,
+          "max": 4098.409,
+          "stddev": 181.965
+        },
+        "ttft_ms": {
+          "count": 45,
+          "mean": 98.723,
+          "p50": 99.292,
+          "p95": 110.605,
+          "p99": 113.198,
+          "min": 77.468,
+          "max": 114.487,
+          "stddev": 9.1
+        },
+        "itl_mean_ms": {
+          "count": 45,
+          "mean": 28.01,
+          "p50": 27.235,
+          "p95": 31.262,
+          "p99": 31.382,
+          "min": 26.563,
+          "max": 31.383,
+          "stddev": 1.419
+        },
+        "output_tokens_per_s": 31.5,
+        "prompt_tokens_total": 2880,
+        "completion_tokens_total": 5760,
+        "fallback_events": 0,
+        "cache_hits": 0,
+        "estimated_cost_usd": 0.0,
+        "cost_priced": false,
+        "simulated_inference": true,
+        "models_used": [
+          "local-coder"
+        ],
+        "providers_used": [
+          "mock-fast"
+        ]
+      }
+    },
+    {
+      "cell": {
+        "label": "models-fast",
+        "model": "local-coder",
+        "strategy": null,
+        "task": null,
+        "concurrency": 4,
+        "max_tokens": 128,
+        "stream": true,
+        "prompt": {
+          "kind": "synthetic",
+          "target_input_tokens": 64
+        }
+      },
+      "summary": {
+        "label": "models-fast",
+        "model": "local-coder",
+        "strategy": null,
+        "task": null,
+        "concurrency": 4,
+        "requests_configured": 50,
+        "warmup": 5,
+        "stream": true,
+        "measured_requests": 45,
+        "elapsed_s": 49.376,
+        "error_count": 0,
+        "error_rate": 0.0,
+        "requests_per_s": 0.911,
+        "total_ms": {
+          "count": 45,
+          "mean": 3777.828,
+          "p50": 3742.15,
+          "p95": 3930.239,
+          "p99": 3934.892,
+          "min": 3629.091,
+          "max": 3937.113,
+          "stddev": 82.19
+        },
+        "ttft_ms": {
+          "count": 45,
+          "mean": 92.655,
+          "p50": 93.636,
+          "p95": 106.297,
+          "p99": 109.281,
+          "min": 74.208,
+          "max": 111.187,
+          "stddev": 9.08
+        },
+        "itl_mean_ms": {
+          "count": 45,
+          "mean": 28.965,
+          "p50": 28.749,
+          "p95": 30.152,
+          "p99": 30.156,
+          "min": 27.705,
+          "max": 30.158,
+          "stddev": 0.671
+        },
+        "output_tokens_per_s": 116.65,
+        "prompt_tokens_total": 2880,
+        "completion_tokens_total": 5760,
+        "fallback_events": 0,
+        "cache_hits": 0,
+        "estimated_cost_usd": 0.0,
+        "cost_priced": false,
+        "simulated_inference": true,
+        "models_used": [
+          "local-coder"
+        ],
+        "providers_used": [
+          "mock-fast"
+        ]
+      }
+    }
+  ],
+  "artifacts": {
+    "summary_json": "benchmarks\\results\\bench-20261003-213243-dbcc\\summary.json",
+    "requests_jsonl": "benchmarks\\results\\bench-20261003-213243-dbcc\\requests.jsonl",
+    "report_md": "benchmarks\\reports\\bench-20261003-213243-dbcc.md"
+  }
+}

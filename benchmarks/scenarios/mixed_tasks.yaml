@@ -1,0 +1,23 @@
+# Mixed workload for the routing benchmark (`inferroute route-bench`).
+# Shares are normalized; token sizes are approximate (synthetic filler text).
+name: mixed_tasks
+description: >
+  Four task families of roughly equal weight: short extraction, long reasoning,
+  coding, and summarization over a long input.
+mix:
+  - task: extraction
+    share: 0.25
+    target_input_tokens: 80
+    max_tokens: 48
+  - task: reasoning
+    share: 0.25
+    target_input_tokens: 120
+    max_tokens: 160
+  - task: coding
+    share: 0.25
+    target_input_tokens: 100
+    max_tokens: 120
+  - task: summarization
+    share: 0.25
+    target_input_tokens: 400
+    max_tokens: 64

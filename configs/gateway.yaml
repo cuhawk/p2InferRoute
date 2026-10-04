@@ -1,0 +1,202 @@
+# InferRoute gateway configuration.
+#
+# Everything is declarative; nothing in the code hard-codes model names.
+# Secret values use ${ENV_VAR} (or ${ENV_VAR:default}) placeholders and are resolved
+# from the environment at load time — never commit real keys here.
+
+gateway:
+  host: 127.0.0.1
+  port: 8000
+  request_timeout_s: 120
+  ttft_timeout_s: 60
+  max_concurrent_inference: 16
+  max_queue_depth: 64
+  default_max_tokens: 512
+  max_max_tokens: 8192
+  health_probe_interval_s: 10
+
+security:
+  # Empty list => auth disabled (local development). To enable, set e.g.
+  #   INFERRROUTE_API_KEYS=key1,key2   (or edit this list directly)
+  api_keys: ${INFERRROUTE_API_KEYS:}
+  max_request_body_bytes: 1048576
+  rate_limit:
+    enabled: false
+    requests_per_second: 10
+    burst: 20
+
+cache:
+  # Exact-request response cache is OFF by default (see docs/adr/0004*).
+  response_cache_enabled: ${INFERRROUTE_CACHE_ENABLED:false}
+  response_cache_ttl_s: 300
+  response_cache_max_entries: 256
+  response_cache_max_temperature: 0.0
+  health_cache_ttl_s: 5
+  provider_metrics_cache_ttl_s: 2
+
+observability:
+  log_level: INFO
+  log_json: false
+  service_name: inferroute
+  # Set to e.g. http://localhost:4318/v1/traces to export OTLP traces.
+  otlp_endpoint: ${INFERRROUTE_OTLP_ENDPOINT:}
+  trace_sample_ratio: 1.0
+  prometheus_enabled: true
+
+routing:
+  default_strategy: task_aware
+  balanced_weights: { latency: 0.4, cost: 0.3, quality: 0.3 }
+  max_fallbacks: 2
+  latency_ewma_alpha: 0.3
+  task_profiles:
+    coding:
+      min_quality_tier: 3
+      preferred_capabilities: [coding]
+    reasoning:
+      min_quality_tier: 4
+      preferred_capabilities: [reasoning]
+    extraction:
+      min_quality_tier: 2
+      preferred_capabilities: [extraction]
+    summarization:
+      min_quality_tier: 2
+      preferred_capabilities: [summarization]
+    chat:
+      min_quality_tier: 1
+
+database_path: data/inferroute.db
+
+# ---------------------------------------------------------------------------
+# Providers. `mock-*` providers are deterministic simulators used for development,
+# CI and benchmark control runs — no GPU or API key required.
+# ---------------------------------------------------------------------------
+providers:
+  mock-fast:
+    kind: mock
+    options:
+      ttft_ms: 90
+      # Windows note: the asyncio/Proactor wait path cannot reliably resolve
+      # sleeps below ~16ms under uvicorn (sub-tick IOCP artifact); keep itl_ms
+      # >= 20 for accurate simulation on Windows dev machines.
+      itl_ms: 22
+      output_tokens: 96
+      supports_tools: false
+
+  mock-strong:
+    kind: mock
+    options:
+      ttft_ms: 420
+      itl_ms: 45
+      output_tokens: 256
+      supports_tools: true
+      supports_structured_output: true
+
+  # llama.cpp server (llama-server). Start it, then flip enabled to true.
+  # Example:
+  #   llama-server -m ./models/qwen2.5-7b-instruct-q4_k_m.gguf -c 8192 --port 8081
+  llama-cpp-local:
+    kind: llama_cpp
+    endpoint: http://127.0.0.1:8081/v1
+    enabled: false
+    timeout_s: 120
+    options:
+      streaming: true
+      supported_parameters: [temperature, top_p, max_tokens, stop, seed, presence_penalty, frequency_penalty]
+      stream_usage: true
+
+  # vLLM OpenAI-compatible server.
+  # Example:
+  #   vllm serve Qwen/Qwen2.5-7B-Instruct --port 8001
+  vllm-local:
+    kind: vllm
+    endpoint: http://127.0.0.1:8001/v1
+    enabled: false
+    timeout_s: 120
+    options:
+      streaming: true
+      supports_tools: true
+      supports_structured_output: true
+      supported_parameters: [temperature, top_p, max_tokens, stop, seed, tools, tool_choice,
+                             response_format, presence_penalty, frequency_penalty]
+      stream_usage: true
+
+  # Generic hosted OpenAI-compatible endpoint (disabled unless configured).
+  # Requires INFERRROUTE_REMOTE_ENDPOINT and REMOTE_API_KEY in the environment.
+  hosted-openai-compat:
+    kind: openai_compat
+    endpoint: ${INFERRROUTE_REMOTE_ENDPOINT:http://127.0.0.1:9/v1}
+    api_key: ${REMOTE_API_KEY:}
+    enabled: false
+    timeout_s: 60
+    options:
+      streaming: true
+      supports_tools: true
+      supports_vision: true
+      supports_structured_output: true
+      supported_parameters: [temperature, top_p, max_tokens, stop, seed, user, tools,
+                             tool_choice, response_format, presence_penalty, frequency_penalty, n]
+      stream_usage: true
+
+# ---------------------------------------------------------------------------
+# Models. `name` is the OpenAI-visible model id (aliases allowed). Everything the
+# router knows about a model is declared here.
+# NOTE: the `mock-*` entries are simulated stand-ins for local models so the full
+# system (routing, fallback, benchmarks, dashboard) works without a GPU. Replace
+# their provider with llama-cpp-local / vllm-local when running real backends.
+# ---------------------------------------------------------------------------
+models:
+  local-mini:
+    provider: mock-fast
+    served_model_name: qwen2.5-0.5b-instruct
+    context_window: 32768
+    quantization: Q4_K_M
+    parameter_count_b: 0.5
+    vram_estimate_gb: 0.8
+    capabilities: [chat, extraction, summarization]
+    local: true
+    privacy: local
+    quality_tier: 2
+    aliases: [mini]
+
+  local-coder:
+    provider: mock-fast
+    served_model_name: qwen2.5-coder-7b-instruct
+    context_window: 32768
+    quantization: Q4_K_M
+    parameter_count_b: 7
+    vram_estimate_gb: 5.2
+    capabilities: [chat, coding, extraction]
+    local: true
+    privacy: local
+    quality_tier: 3
+    aliases: [coder]
+
+  local-reasoner:
+    provider: mock-strong
+    served_model_name: qwen2.5-14b-instruct
+    context_window: 65536
+    quantization: Q5_K_M
+    parameter_count_b: 14
+    vram_estimate_gb: 11.0
+    capabilities: [chat, reasoning, coding, extraction, summarization]
+    supports_tools: true
+    supports_structured_output: true
+    local: true
+    privacy: local
+    quality_tier: 4
+    aliases: [reasoner]
+
+  cloud-flagship:
+    provider: hosted-openai-compat
+    context_window: 128000
+    capabilities: [chat, reasoning, coding, extraction, summarization]
+    supports_tools: true
+    supports_vision: true
+    supports_structured_output: true
+    local: false
+    privacy: public
+    quality_tier: 5
+    pricing:
+      # Example rates — set real rates for your provider before trusting cost data.
+      input_per_1m_usd: 0.15
+      output_per_1m_usd: 0.60

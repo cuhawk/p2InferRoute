@@ -1,0 +1,67 @@
+{
+  "title": "InferRoute",
+  "uid": "inferroute-overview",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "type": "stat", "title": "Requests / 5m", "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(rate(inferroute_requests_total[5m]))", "refId": "A" }]
+    },
+    {
+      "type": "stat", "title": "Error rate / 5m", "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(rate(inferroute_requests_total{status!=\"200\"}[5m])) / clamp_min(sum(rate(inferroute_requests_total[5m])), 0.001)", "refId": "A" }]
+    },
+    {
+      "type": "stat", "title": "Fallbacks / 5m", "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(rate(inferroute_fallbacks_total[5m]))", "refId": "A" }]
+    },
+    {
+      "type": "stat", "title": "Rate-limited / 5m", "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "sum(rate(inferroute_rate_limited_total[5m]))", "refId": "A" }]
+    },
+    {
+      "type": "timeseries", "title": "Request latency (p50/p95)", "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(inferroute_request_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(inferroute_request_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Time to first token (p50/p95)", "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(inferroute_ttft_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(inferroute_ttft_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Token throughput (tokens/s)", "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum(rate(inferroute_tokens_total{direction=\"output\"}[5m]))", "legendFormat": "output", "refId": "A" },
+        { "expr": "sum(rate(inferroute_tokens_total{direction=\"input\"}[5m]))", "legendFormat": "input", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Provider health & circuits", "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "inferroute_provider_healthy", "legendFormat": "healthy {{provider}}", "refId": "A" },
+        { "expr": "inferroute_circuit_state", "legendFormat": "circuit {{provider}}", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "GPU", "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "inferroute_gpu_utilization_percent", "legendFormat": "util % (gpu {{gpu}})", "refId": "A" },
+        { "expr": "inferroute_gpu_memory_used_bytes", "legendFormat": "VRAM used (gpu {{gpu}})", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Estimated API cost (USD/s)", "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum(rate(inferroute_cost_estimated_usd_total[5m])) by (provider)", "legendFormat": "{{provider}}", "refId": "A" }
+      ]
+    }
+  ]
+}
