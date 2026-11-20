@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import random
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -49,6 +50,7 @@ from inferroute.providers.base import (
     StreamEvent,
     Usage,
 )
+from inferroute.routing.affinity import prefix_keys
 
 logger = get_logger(__name__)
 
@@ -98,6 +100,9 @@ class MockOptions:
     supports_structured_output: bool = False
     stream_usage: bool = True
     emit_tool_call: bool = False
+    prefix_cache_entries: int = 0
+    prefix_cache_hit_ttft_ms: float = 0
+    structured_output_text: str | None = None
 
     @classmethod
     def from_cfg(cls, cfg: ProviderCfg) -> MockOptions:
@@ -118,6 +123,9 @@ class MockOptions:
             supports_structured_output=bool(o.get("supports_structured_output", False)),
             stream_usage=bool(o.get("stream_usage", True)),
             emit_tool_call=bool(o.get("emit_tool_call", False)),
+            prefix_cache_entries=max(0, int(o.get("prefix_cache_entries", 0))),
+            prefix_cache_hit_ttft_ms=float(o.get("prefix_cache_hit_ttft_ms", 0)),
+            structured_output_text=o.get("structured_output_text"),
         )
 
 
@@ -127,6 +135,7 @@ class MockProvider(InferenceProvider):
     def __init__(self, cfg: ProviderCfg) -> None:
         super().__init__(cfg)
         self.opts = MockOptions.from_cfg(cfg)
+        self._prefix_cache: OrderedDict[bytes, int] = OrderedDict()
         self._seq = 0
         caps = self._capabilities
         assert caps is not None
@@ -215,6 +224,8 @@ class MockProvider(InferenceProvider):
             finish = "tool_calls"
         else:
             text = self._generate_text(request, n_tokens)
+            if request.response_format and self.opts.structured_output_text is not None:
+                text = self.opts.structured_output_text
             message = Message(role="assistant", content=text)
             finish = "stop"
 
@@ -256,7 +267,29 @@ class MockProvider(InferenceProvider):
         stream_started = time.perf_counter()
         yield StreamEvent(type="start")
         self._maybe_fail(seq, rng, "connect")
-        await self._spend(ttft_ms=self.opts.ttft_ms)
+        cached = None
+        keys = []
+        if self.opts.prefix_cache_entries:
+            messages = [m.to_openai() for m in request.messages]
+            keys = prefix_keys(messages, [request.model, request.tools, request.response_format])
+            cached = next(
+                (self._prefix_cache[key] for key in reversed(keys) if key in self._prefix_cache),
+                0,
+            )
+        await self._spend(
+            ttft_ms=self.opts.prefix_cache_hit_ttft_ms if cached else self.opts.ttft_ms
+        )
+        self._maybe_fail(seq, rng, "first_token")
+
+        if keys:
+            cumulative = 0
+            for key, message in zip(keys, request.messages, strict=True):
+                if isinstance(message.content, str):
+                    cumulative += len(message.content.split())
+                self._prefix_cache[key] = cumulative
+                self._prefix_cache.move_to_end(key)
+                if len(self._prefix_cache) > self.opts.prefix_cache_entries:
+                    self._prefix_cache.popitem(last=False)
 
         n_tokens = self._resolve_output_tokens(request)
         tool_emitted = False
@@ -287,6 +320,7 @@ class MockProvider(InferenceProvider):
             if i == 0 and not tool_emitted:
                 yield StreamEvent(
                     type="token",
+                    single_token=True,
                     content=word,
                     ttft_ms=(time.perf_counter() - stream_started) * 1000.0,
                 )
@@ -297,7 +331,7 @@ class MockProvider(InferenceProvider):
                         self.name, "mock provider failed mid-stream (simulated)", 503
                     )
                 if not tool_emitted:
-                    yield StreamEvent(type="token", content=word)
+                    yield StreamEvent(type="token", content=word, single_token=True)
             emitted += 1
 
         prompt_text = "\n".join(
@@ -308,6 +342,7 @@ class MockProvider(InferenceProvider):
             prompt_tokens=prompt_tokens,
             completion_tokens=emitted,
             total_tokens=prompt_tokens + emitted,
+            cached_prompt_tokens=cached,
         )
         yield StreamEvent(
             type="final", finish_reason="tool_calls" if tool_emitted else "stop", usage=usage

@@ -64,6 +64,9 @@ class RouteStrategy(StrEnum):
     private = "private"
     balanced = "balanced"
     task_aware = "task_aware"
+    prefix_affinity = "prefix_affinity"
+    round_robin = "round_robin"
+    schema_cascade = "schema_cascade"
 
 
 class TaskType(StrEnum):
@@ -138,6 +141,7 @@ class ModelCfg(BaseModel):
 
     name: str
     provider: str
+    replica_group: str | None = None
     served_model_name: str | None = None  # name the backend knows; defaults to `name`
     context_window: int = Field(default=8192, gt=0)
     quantization: str | None = None
@@ -197,6 +201,8 @@ class RoutingCfg(BaseModel):
     default_strategy: RouteStrategy = RouteStrategy.balanced
     balanced_weights: BalancedWeightsCfg = Field(default_factory=BalancedWeightsCfg)
     task_profiles: dict[TaskType, TaskProfileCfg] = Field(default_factory=_default_task_profiles)
+    affinity_max_inflight_per_worker: int = Field(default=4, ge=1)
+    affinity_max_entries: int = Field(default=8192, ge=1)
     max_fallbacks: int = Field(default=2, ge=0, le=10)
     latency_ewma_alpha: float = Field(default=0.3, gt=0, le=1)
     # Costs are compared in $ per 1k estimated output tokens; latency in ms.
@@ -261,6 +267,8 @@ class GatewayCfg(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     request_timeout_s: float = Field(default=120.0, gt=0)
+    slo_ttft_ms: float = Field(default=250, gt=0, allow_inf_nan=False)
+    slo_tpot_ms: float = Field(default=40, gt=0, allow_inf_nan=False)
     ttft_timeout_s: float = Field(default=60.0, gt=0)
     max_concurrent_inference: int = Field(default=16, ge=1)
     max_queue_depth: int = Field(default=64, ge=0)

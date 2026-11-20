@@ -1,0 +1,25 @@
+# Two independent llama-server replicas serving identical weights and chat templates.
+gateway:
+  slo_ttft_ms: 400
+  slo_tpot_ms: 150
+routing:
+  affinity_max_inflight_per_worker: 2
+providers:
+  cpu-a: &llama
+    kind: llama_cpp
+    endpoint: http://127.0.0.1:18081/v1
+    options:
+      streaming: true
+      stream_usage: true
+  cpu-b:
+    <<: *llama
+    endpoint: http://127.0.0.1:18082/v1
+models:
+  smollm2-a: &smollm2
+    provider: cpu-a
+    served_model_name: smollm2
+    replica_group: smollm2
+    context_window: 2048
+  smollm2-b:
+    <<: *smollm2
+    provider: cpu-b

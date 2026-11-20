@@ -21,11 +21,13 @@ import asyncio
 import contextlib
 import random
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from inferroute.config import AppConfig, ModelCfg
+from jsonschema import Draft202012Validator
+
+from inferroute.config import AppConfig, ModelCfg, RouteStrategy
 from inferroute.cost import CostTracker
 from inferroute.observability.logging import get_logger
 from inferroute.observability.metrics import GatewayMetrics
@@ -37,12 +39,15 @@ from inferroute.providers.base import (
     InferenceProvider,
     ProviderError,
     StreamEvent,
+    Usage,
 )
 from inferroute.registry import ModelView
 from inferroute.reliability.circuit_breaker import CircuitBreaker
 from inferroute.reliability.retry import execute_with_retry
+from inferroute.routing.affinity import PrefixAffinity, prefix_keys
 from inferroute.routing.engine import RouteDecision
 from inferroute.routing.health import HealthMonitor
+from inferroute.routing.schema_cascade import valid_completion
 from inferroute.store import Store
 
 logger = get_logger(__name__)
@@ -73,6 +78,11 @@ class DispatchResult:
 ChatRequestBuilder = Callable[[ModelView], ChatRequest]
 
 
+class SchemaValidationError(ProviderError):
+    def __init__(self, provider: str, message: str) -> None:
+        super().__init__(provider, message, retryable=False)
+
+
 class Dispatcher:
     def __init__(
         self,
@@ -90,13 +100,20 @@ class Dispatcher:
         self.cost_tracker = cost_tracker
         self.store = store
         self._rng = random.Random()
+        self.affinity = PrefixAffinity(
+            cfg.routing.affinity_max_entries, cfg.routing.affinity_max_inflight_per_worker
+        )
+        self._round_robin: dict[tuple[str, ...], int] = {}
 
     # ------------------------------------------------------------- non-stream
 
     async def chat(
-        self, build_request: ChatRequestBuilder, decision: RouteDecision
+        self,
+        build_request: ChatRequestBuilder,
+        decision: RouteDecision,
+        validator: Draft202012Validator | None = None,
     ) -> DispatchResult:
-        candidates = self._candidates(decision)
+        candidates, keys = self._candidates(decision, build_request)
         errors: list[ProviderError] = []
         fallbacks: list[FallbackEvent] = []
         attempts: list[str] = []
@@ -136,6 +153,7 @@ class Dispatcher:
             ) -> ChatResult:
                 return await self._attempt_chat(_provider, _request, _model)
 
+            self.affinity.active[cand.provider_name] += 1
             try:
                 result = await execute_with_retry(attempt, policy, rng=self._rng)
             except ProviderError as exc:
@@ -154,6 +172,9 @@ class Dispatcher:
                 attempts[-1] = f"{cand.name}: failed ({type(exc).__name__}: {exc})"
                 continue
 
+            finally:
+                self.affinity.active[cand.provider_name] -= 1
+
             breaker.record_success()
             self.monitor.record_success(
                 model=cand.name,
@@ -161,7 +182,20 @@ class Dispatcher:
                 ttft_ms=result.ttft_ms or result.total_ms,
                 total_ms=result.total_ms,
             )
-            self._record_success_metrics(cand, result, decision, fallbacks)
+            if validator is not None and not valid_completion(result, validator):
+                validation_error = SchemaValidationError(
+                    cand.provider_name, "completion failed JSON schema validation"
+                )
+                self._record_chat_metrics(cand, result, decision, status="502")
+                errors.append(validation_error)
+                attempts[-1] = f"{cand.name}: failed JSON schema validation"
+                await self._record_outcome(
+                    cand, result, decision, fallbacks, error=str(validation_error)
+                )
+                continue
+            self._record_chat_metrics(cand, result, decision, status="200")
+            if cand.model.replica_group == candidates[0].model.replica_group:
+                self.affinity.record(keys, cand.provider_name)
             await self._record_outcome(cand, result, decision, fallbacks, error=None)
             return DispatchResult(
                 result=result, model_view=cand, fallbacks=fallbacks, attempts=attempts
@@ -197,7 +231,7 @@ class Dispatcher:
         (replaying any buffered events). Raises ``AllProvidersExhaustedError`` if no
         candidate produced a first token; callers map that to a normal HTTP error.
         """
-        candidates = self._candidates(decision)
+        candidates, keys = self._candidates(decision, build_request)
         errors: list[ProviderError] = []
         fallbacks: list[FallbackEvent] = []
         attempts: list[str] = []
@@ -226,6 +260,9 @@ class Dispatcher:
             provider = self.providers[cand.provider_name]
             chat_request = build_request(cand)
             attempts.append(f"{cand.name}: attempting (stream)")
+            iterator: AsyncIterator[StreamEvent] | None = None
+            handed_off = False
+            self.affinity.active[cand.provider_name] += 1
             try:
                 iterator = provider.stream(chat_request).__aiter__()
                 buffered: list[StreamEvent] = []
@@ -234,12 +271,12 @@ class Dispatcher:
                 while True:
                     ev = await asyncio.wait_for(
                         iterator.__anext__(),
-                        timeout=self._next_deadline(started, first_token=ttft_ms is None),
+                        timeout=self._next_deadline(started),
                     )
                     if ev.type == "start":
                         buffered.append(ev)
                         continue
-                    if ev.type == "token" or (ev.tool_calls and not ttft_ms):
+                    if ev.type == "token" and (ev.content or ev.tool_calls):
                         ttft_ms = (
                             ev.ttft_ms
                             if ev.ttft_ms is not None
@@ -254,7 +291,7 @@ class Dispatcher:
                         raise ev.error or ProviderError(
                             cand.provider_name, "stream error", retryable=False
                         )
-                return StreamHandle(
+                handle = StreamHandle(
                     dispatcher=self,
                     model_view=cand,
                     chat_request=chat_request,
@@ -267,7 +304,12 @@ class Dispatcher:
                     committed=False,
                     breaker=breaker,
                     decision=decision,
+                    affinity_keys=keys
+                    if cand.model.replica_group == candidates[0].model.replica_group
+                    else [],
                 )
+                handed_off = True
+                return handle
             except StopAsyncIteration:
                 err = ProviderError(
                     cand.provider_name, "stream ended before first token", retryable=True
@@ -278,7 +320,6 @@ class Dispatcher:
                 attempts[-1] = f"{cand.name}: stream ended before first token"
                 continue
             except ProviderError as exc:
-                await self._close_quietly(locals().get("iterator"))
                 breaker.record_failure()
                 self.monitor.record_failure(cand.provider_name, exc)
                 errors.append(exc)
@@ -288,7 +329,6 @@ class Dispatcher:
                 err = ProviderError(
                     cand.provider_name, "stream timed out before first token", retryable=True
                 )
-                await self._close_quietly(locals().get("iterator"))
                 breaker.record_failure()
                 self.monitor.record_failure(cand.provider_name, err)
                 errors.append(err)
@@ -298,12 +338,15 @@ class Dispatcher:
                 err = ProviderError(
                     cand.provider_name, f"unexpected stream error: {exc}", retryable=False
                 )
-                await self._close_quietly(locals().get("iterator"))
                 breaker.record_failure()
                 self.monitor.record_failure(cand.provider_name, err)
                 errors.append(err)
                 attempts[-1] = f"{cand.name}: failed ({type(exc).__name__})"
                 continue
+            finally:
+                if not handed_off:
+                    self.affinity.active[cand.provider_name] -= 1
+                    await self._close_quietly(iterator)
 
         raise AllProvidersExhaustedError(
             f"all {len(candidates)} candidate model(s) failed before first token: "
@@ -311,12 +354,9 @@ class Dispatcher:
             errors,
         )
 
-    def _next_deadline(self, started: float, first_token: bool) -> float:
-        elapsed = time.perf_counter() - started
-        if first_token:
-            return max(0.05, self.cfg.gateway.ttft_timeout_s)
-        remaining = self.cfg.gateway.request_timeout_s - elapsed
-        return max(0.05, remaining)
+    def _next_deadline(self, started: float) -> float:
+        deadline = min(self.cfg.gateway.ttft_timeout_s, self.cfg.gateway.request_timeout_s)
+        return max(0, deadline - (time.perf_counter() - started))
 
     @staticmethod
     async def _close_quietly(iterator: AsyncIterator[StreamEvent] | None) -> None:
@@ -330,9 +370,54 @@ class Dispatcher:
 
     # ------------------------------------------------------------- shared
 
-    def _candidates(self, decision: RouteDecision) -> list[ModelView]:
-        max_len = 1 + self.cfg.routing.max_fallbacks
-        return decision.ranked[:max_len]
+    def _candidates(
+        self, decision: RouteDecision, build_request: ChatRequestBuilder
+    ) -> tuple[list[ModelView], list[bytes]]:
+        ranked = decision.ranked
+        limit = 1 + self.cfg.routing.max_fallbacks
+        keys: list[bytes] = []
+        if len(ranked) < 2 or decision.strategy not in {
+            RouteStrategy.prefix_affinity,
+            RouteStrategy.round_robin,
+        }:
+            return ranked[:limit], keys
+        primary = ranked[0]
+        if primary.model.replica_group is None:
+            return ranked[:limit], keys
+
+        replicas = sorted(
+            (
+                m
+                for m in ranked
+                if (
+                    m.model.replica_group == primary.model.replica_group
+                    and m.model.backend_model_name == primary.model.backend_model_name
+                    and m.model.privacy == primary.model.privacy
+                    and m.model.quality_tier == primary.model.quality_tier
+                )
+            ),
+            key=lambda m: m.name,
+        )
+        if decision.strategy == RouteStrategy.prefix_affinity:
+            request = build_request(primary)
+            keys = prefix_keys(
+                [m.to_openai() for m in request.messages],
+                [
+                    primary.model.replica_group,
+                    request.model,
+                    request.tools,
+                    request.response_format,
+                ],
+            )
+            replicas = self.affinity.rank(replicas, keys)
+        else:
+            pool = tuple(m.name for m in replicas)
+            start = self._round_robin.get(pool)
+            if start is None:
+                start = self._rng.randrange(len(pool))
+            self._round_robin[pool] = (start + 1) % len(pool)
+            replicas = replicas[start:] + replicas[:start]
+        return (replicas + [m for m in ranked if m not in replicas])[:limit], keys
 
     def _record_fallback_metric(self, from_p: str, to_p: str, errors: list[ProviderError]) -> None:
         reason = type(errors[-1]).__name__ if errors else "unknown"
@@ -340,19 +425,19 @@ class Dispatcher:
             from_provider=from_p, to_provider=to_p, reason=reason
         ).inc()
 
-    def _record_success_metrics(
+    def _record_chat_metrics(
         self,
         cand: ModelView,
         result: ChatResult,
         decision: RouteDecision,
-        fallbacks: list[FallbackEvent],
+        status: str,
     ) -> None:
         usage = result.response.usage
         self.metrics.requests_total.labels(
             model=cand.name,
             provider=cand.provider_name,
             strategy=decision.strategy.value,
-            status="200",
+            status=status,
         ).inc()
         self.metrics.request_latency.labels(provider=cand.provider_name, model=cand.name).observe(
             result.total_ms / 1000.0
@@ -383,7 +468,7 @@ class Dispatcher:
                 model=cand.name,
                 provider=cand.provider_name,
                 strategy=decision.strategy.value,
-                status=200,
+                status=502 if error else 200,
                 ttft_ms=result.ttft_ms,
                 total_ms=result.total_ms,
                 prompt_tokens=usage.prompt_tokens,
@@ -412,7 +497,11 @@ class StreamHandle:
         committed: bool,
         breaker: CircuitBreaker,
         decision: RouteDecision,
+        affinity_keys: list[bytes] | None = None,
     ) -> None:
+        self.affinity_keys = affinity_keys or []
+        self._has_reservation = affinity_keys is not None
+        self._closed = False
         self.dispatcher = dispatcher
         self.model_view = model_view
         self.chat_request = chat_request
@@ -426,69 +515,76 @@ class StreamHandle:
         self.breaker = breaker
         self.decision = decision
         self.provider_error: ProviderError | None = None
-        self.usage: Any = None
+        self.usage: Usage | None = None
         self.finish_reason: str | None = None
 
-    def iter_events(self) -> AsyncIterator[StreamEvent]:
+    def iter_events(self) -> AsyncGenerator[StreamEvent]:
         return self._wrap()
 
-    async def _wrap(self) -> AsyncIterator[StreamEvent]:
+    async def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            if self._has_reservation:
+                self.dispatcher.affinity.active[self.model_view.provider_name] -= 1
+            await Dispatcher._close_quietly(self._iterator)
+
+    async def _wrap(self) -> AsyncGenerator[StreamEvent]:
         d = self.dispatcher
         cfg = d.cfg
         cancelled = False
         emitted_tokens = 0
-        itls: list[float] = []
-        last_token_ts = time.perf_counter()
         error_to_raise: Exception | None = None
         try:
             for ev in self._buffered:
                 if ev.type == "token":
                     emitted_tokens += 1
-                    now = time.perf_counter()
-                    itls.append(now - last_token_ts)
-                    last_token_ts = now
+                if ev.usage is not None:
+                    self.usage = ev.usage
+                if ev.finish_reason:
+                    self.finish_reason = ev.finish_reason
                 yield ev
 
             while True:
                 try:
                     remaining = cfg.gateway.request_timeout_s - (time.perf_counter() - self.started)
                     ev = await asyncio.wait_for(
-                        self._iterator.__anext__(), timeout=max(0.05, remaining)
+                        self._iterator.__anext__(), timeout=max(0, remaining)
                     )
                 except StopAsyncIteration:
                     break
                 except TimeoutError as exc:
-                    error_to_raise = ProviderError(
+                    raise ProviderError(
                         self.model_view.provider_name,
                         "stream exceeded total deadline",
                         retryable=False,
+                    ) from exc
+                if ev.type == "error":
+                    raise ev.error or ProviderError(
+                        self.model_view.provider_name, "stream error", retryable=False
                     )
-                    raise error_to_raise from exc
-                except ProviderError as exc:
-                    error_to_raise = exc
-                    raise
                 if ev.type == "token":
                     emitted_tokens += 1
-                    now = time.perf_counter()
-                    itls.append(now - last_token_ts)
-                    last_token_ts = now
-                elif ev.type in ("final", "final_usage"):
-                    if ev.usage is not None:
-                        self.usage = ev.usage
-                    if ev.finish_reason:
-                        self.finish_reason = ev.finish_reason
+                if ev.usage is not None:
+                    self.usage = ev.usage
+                if ev.finish_reason:
+                    self.finish_reason = ev.finish_reason
                 yield ev
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             cancelled = True
             raise
-        except asyncio.CancelledError:
-            cancelled = True
-            raise
-        except ProviderError as exc:
-            self.provider_error = exc
-            raise
+        except Exception as exc:
+            if isinstance(exc, ProviderError):
+                error_to_raise = exc
+            else:
+                error_to_raise = ProviderError(
+                    self.model_view.provider_name, "unexpected stream failure", retryable=False
+                )
+            self.provider_error = error_to_raise
+            if error_to_raise is exc:
+                raise
+            raise error_to_raise from exc
         finally:
-            await Dispatcher._close_quietly(self._iterator)
+            await self.close()
             total_ms = (time.perf_counter() - self.started) * 1000.0
             mv = self.model_view
             if cancelled or error_to_raise is not None:
@@ -512,6 +608,7 @@ class StreamHandle:
                     emitted_tokens,
                 )
             else:
+                d.affinity.record(self.affinity_keys, mv.provider_name)
                 self.breaker.record_success()
                 usage = self.usage
                 prompt_t = usage.prompt_tokens if usage else 0
@@ -532,10 +629,6 @@ class StreamHandle:
                     d.metrics.ttft.labels(provider=mv.provider_name, model=mv.name).observe(
                         self.ttft_ms / 1000.0
                     )
-                for itl in itls:
-                    d.metrics.inter_token_latency.labels(
-                        provider=mv.provider_name, model=mv.name
-                    ).observe(itl)
                 d.metrics.observe_usage(mv.provider_name, mv.name, prompt_t, completion_t)
                 d.metrics.request_latency.labels(provider=mv.provider_name, model=mv.name).observe(
                     total_ms / 1000.0

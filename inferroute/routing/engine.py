@@ -257,6 +257,14 @@ class RoutingEngine:
             strategy, surviving, state, spec, classification, estimated_prompt_tokens, profile
         )
         ordered = sorted(surviving, key=lambda c: (scores[c.name], c.name))
+        if strategy == RouteStrategy.schema_cascade:
+            ordered.sort(key=lambda c: (c.model.quality_tier, self._latency_ms(c, state)))
+            # Keep one fast candidate from each tier so same-tier replicas cannot
+            # consume the fallback budget before the next tier is tried.
+            by_tier: dict[int, ModelView] = {}
+            for cand in ordered:
+                by_tier.setdefault(cand.model.quality_tier, cand)
+            ordered = list(by_tier.values())
         selected = ordered[0]
         for cand in ordered:
             trace.append(

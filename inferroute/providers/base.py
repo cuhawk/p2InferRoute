@@ -220,6 +220,7 @@ class Usage:
     completion_tokens: int
     total_tokens: int
     estimated: bool = False  # True when tokens were estimated, not backend-reported
+    cached_prompt_tokens: int | None = None
 
     @classmethod
     def estimate(cls, prompt_text: str, completion_text: str) -> Usage:
@@ -266,6 +267,7 @@ class StreamEvent:
     usage: Usage | None = None
     tool_calls: list[dict[str, Any]] | None = None
     error: ProviderError | None = None
+    single_token: bool = False
     # milliseconds since stream start, set on the first token event
     ttft_ms: float | None = None
 

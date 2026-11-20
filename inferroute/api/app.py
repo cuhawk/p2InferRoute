@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -62,6 +63,7 @@ class GatewayMiddleware:
         state = scope.setdefault("state", {})
         request_id = headers.get("x-request-id") or uuid.uuid4().hex[:16]
         state["request_id"] = request_id
+        state["started"] = time.perf_counter()
 
         # request size limit (also re-checked after reading the body in the chat route)
         content_length = headers.get("content-length")

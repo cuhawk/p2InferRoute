@@ -3,22 +3,30 @@
 from __future__ import annotations
 
 import json
-import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from jsonschema.exceptions import SchemaError
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 
 from inferroute.api import sse
-from inferroute.api.app import GatewayContext, _error_response
+from inferroute.api.context import GatewayContext, _error_response
 from inferroute.api.schemas import ChatCompletionRequest
 from inferroute.api.sse import format_sse
 from inferroute.cache import ResponseCache
 from inferroute.config import RouteStrategy, TaskType
 from inferroute.cost import estimate_cost
-from inferroute.dispatch import AllProvidersExhaustedError, ChatRequestBuilder, DispatchResult
+from inferroute.dispatch import (
+    AllProvidersExhaustedError,
+    ChatRequestBuilder,
+    DispatchResult,
+    SchemaValidationError,
+    StreamHandle,
+)
 from inferroute.observability.logging import get_logger
 from inferroute.providers.base import (
     ChatRequest,
@@ -27,8 +35,10 @@ from inferroute.providers.base import (
     ProviderError,
 )
 from inferroute.registry import ModelView
-from inferroute.reliability.queue import QueueFullError
-from inferroute.routing.engine import RouteSpec
+from inferroute.reliability.queue import QueueFullError, QueueSlot
+from inferroute.routing.engine import RouteDecision, RouteSpec
+from inferroute.routing.schema_cascade import compile_schema
+from inferroute.telemetry.stream import StreamTelemetry
 
 logger = get_logger(__name__)
 
@@ -239,7 +249,33 @@ def register_chat_routes(app: FastAPI) -> None:
         if err is not None:
             return err
 
-        started = time.perf_counter()
+        fmt = body.response_format or {}
+        envelope = fmt.get("json_schema")
+        strict = (
+            fmt.get("type") == "json_schema"
+            and isinstance(envelope, dict)
+            and envelope.get("strict") is True
+        )
+        if (spec.strategy or ctx.cfg.routing.default_strategy) == RouteStrategy.schema_cascade and (
+            body.stream or not strict
+        ):
+            return _error_response(
+                400,
+                "schema_cascade requires non-streaming strict JSON schema output",
+                "invalid_request_error",
+                "invalid_cascade_request",
+            )
+        validator = None
+        if strict and not body.stream:
+            try:
+                validator = compile_schema(fmt)
+            except (KeyError, SchemaError, ValueError, RecursionError):
+                return _error_response(
+                    400, "invalid strict JSON schema", "invalid_request_error", "invalid_schema"
+                )
+            if spec.strategy is None and body.model.lower() in {"auto", "default", ""}:
+                spec.strategy = RouteStrategy.schema_cascade
+
         decision = ctx.engine.route(spec, ctx.monitor.snapshot())
         ctx.metrics.routing_decisions_total.labels(
             strategy=decision.strategy.value,
@@ -302,8 +338,8 @@ def register_chat_routes(app: FastAPI) -> None:
         cache = ctx.response_cache
         cache_key: str | None = None
         if cache is not None:
-            if body.stream:
-                cache_state = "BYPASS"  # streaming responses are never cached
+            if body.stream or validator is not None:
+                cache_state = "BYPASS"
             else:
                 cacheable, _why = cache.cacheable(body_for_key, bypass)
                 if cacheable:
@@ -339,18 +375,28 @@ def register_chat_routes(app: FastAPI) -> None:
         try:
             if body.stream:
                 return await _streaming_response(
-                    ctx, body, decision, builder, slot, request_id, cache_state, started
+                    ctx,
+                    body,
+                    decision,
+                    builder,
+                    slot,
+                    request_id,
+                    cache_state,
+                    request.state.started,
                 )
             try:
-                dispatch = await ctx.dispatcher.chat(builder, decision)
+                dispatch = await ctx.dispatcher.chat(builder, decision, validator)
             finally:
                 slot.release()
         except AllProvidersExhaustedError as exc:
             status = 400 if any(isinstance(e, ProviderBadRequestError) for e in exc.errors) else 502
+            code = "all_backends_failed"
+            if any(isinstance(e, SchemaValidationError) for e in exc.errors):
+                status, code = 502, "schema_validation_failed"
             return JSONResponse(
                 status_code=status,
                 content={
-                    **sse.error_payload(str(exc), "upstream_error", "all_backends_failed"),
+                    **sse.error_payload(str(exc), "upstream_error", code),
                     "inferroute": {"request_id": request_id, "route_trace": decision.trace_dicts()},
                 },
                 headers={"x-inferroute-request-id": request_id},
@@ -375,24 +421,54 @@ def register_chat_routes(app: FastAPI) -> None:
         )
 
 
+class ChatStreamingResponse(StreamingResponse):
+    def __init__(
+        self,
+        events: AsyncGenerator[str],
+        handle: StreamHandle,
+        slot: QueueSlot,
+        headers: dict[str, str],
+    ) -> None:
+        super().__init__(events, media_type="text/event-stream", headers=headers)
+        self.events = events
+        self.handle = handle
+        self.slot = slot
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                await self.events.aclose()
+            finally:
+                self.slot.release()
+                await self.handle.close()
+
+
 async def _streaming_response(
     ctx: GatewayContext,
     body: ChatCompletionRequest,
-    decision: Any,
+    decision: RouteDecision,
     builder: ChatRequestBuilder,
-    slot: Any,
+    slot: QueueSlot,
     request_id: str,
     cache_state: str,
     started: float,
 ) -> StreamingResponse:
     # open_stream falls back across candidates until the first token; failures before
     # that point surface as normal HTTP errors with correct status codes.
-    handle = await ctx.dispatcher.open_stream(builder, decision)
+    try:
+        handle = await ctx.dispatcher.open_stream(builder, decision)
+    except BaseException:
+        slot.release()
+        raise
     include_usage = bool(body.stream_options and body.stream_options.include_usage)
     served_model = handle.chat_request.model
     completion_id = f"chatcmpl-{request_id}"
 
-    async def event_stream() -> AsyncIterator[str]:
+    telemetry = StreamTelemetry(started)
+
+    async def event_stream() -> AsyncGenerator[str]:
         try:
             yield format_sse(
                 sse.chunk_payload(completion_id, served_model, {"role": "assistant", "content": ""})
@@ -400,36 +476,34 @@ async def _streaming_response(
             finish_reason: str | None = None
             usage_payload: dict[str, Any] | None = None
             emitted_tokens = 0
-            async for ev in handle.iter_events():
-                if ev.type == "token":
-                    emitted_tokens += 1
-                    delta: dict[str, Any] = {}
-                    if ev.content:
-                        delta["content"] = ev.content
-                    if ev.tool_calls:
-                        delta["tool_calls"] = ev.tool_calls
-                    yield format_sse(sse.chunk_payload(completion_id, served_model, delta))
-                elif ev.type in ("final", "final_usage"):
-                    if ev.finish_reason:
+            async with aclosing(handle.iter_events()) as events:
+                async for ev in events:
+                    if ev.type == "token" and (ev.content or ev.tool_calls):
+                        emitted_tokens += 1
+                        delta: dict[str, Any] = {}
+                        if ev.content:
+                            delta["content"] = ev.content
+                        if ev.tool_calls:
+                            delta["tool_calls"] = ev.tool_calls
+                        telemetry.observe(ev)
+                        yield format_sse(sse.chunk_payload(completion_id, served_model, delta))
+                    elif ev.finish_reason:
                         finish_reason = ev.finish_reason
-                    if ev.usage is not None:
-                        usage_payload = {
-                            "prompt_tokens": ev.usage.prompt_tokens,
-                            "completion_tokens": ev.usage.completion_tokens,
-                            "total_tokens": ev.usage.total_tokens,
-                            "estimated": ev.usage.estimated,
-                        }
-                elif ev.type == "error":
-                    err = ev.error
-                    yield format_sse(
-                        {
-                            "error": {
-                                "message": f"upstream stream failed: {err}",
-                                "type": "upstream_error",
-                                "code": "midstream_failure",
-                            }
-                        }
-                    )
+
+            usage = handle.usage
+            if usage is not None:
+                usage_payload = {
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "estimated": usage.estimated,
+                }
+                if usage.cached_prompt_tokens is not None:
+                    usage_payload["prompt_tokens_details"] = {
+                        "cached_tokens": usage.cached_prompt_tokens
+                    }
+            gateway = ctx.cfg.gateway
+            timings = telemetry.summary(usage, gateway.slo_ttft_ms, gateway.slo_tpot_ms)
             yield format_sse(
                 sse.chunk_payload(
                     completion_id, served_model, {}, finish_reason=finish_reason or "stop"
@@ -456,12 +530,25 @@ async def _streaming_response(
                         "provider": handle.model_view.provider_name,
                         "fallbacks": [f.to_dict() for f in handle.fallbacks],
                         "cost": est.to_dict(),
+                        "stream_telemetry": timings,
                         "cache": cache_state,
                         "simulated_inference": handle.model_view.provider.kind == "mock",
                     },
                 }
             )
             yield sse.DONE_SENTINEL
+            labels = {"provider": handle.model_view.provider_name, "model": handle.model_view.name}
+            if timings["ttft_ms"] is not None:
+                ctx.metrics.observe_stream_ttft(**labels, seconds=timings["ttft_ms"] / 1000)
+            if timings["tpot_ms"] is not None:
+                ctx.metrics.stream_tpot.labels(**labels, source=timings["tpot_source"]).observe(
+                    timings["tpot_ms"] / 1000
+                )
+            ctx.metrics.stream_slo_met.labels(**labels).inc(int(timings["slo_met"]))
+            for interval in timings["itl_ms"] or []:
+                ctx.metrics.inter_token_latency.labels(**labels).observe(interval / 1000)
+            for interval in timings["inter_delta_ms"] or []:
+                ctx.metrics.stream_inter_delta.labels(**labels).observe(interval / 1000)
         except ProviderError as exc:
             # post-first-token upstream failure: surface in-band (headers already sent)
             yield format_sse(
@@ -474,8 +561,6 @@ async def _streaming_response(
                 }
             )
             yield sse.DONE_SENTINEL
-        finally:
-            slot.release()
 
     headers = _inferroute_headers(
         None,
@@ -490,4 +575,4 @@ async def _streaming_response(
             "X-Accel-Buffering": "no",
         },
     )
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+    return ChatStreamingResponse(event_stream(), handle, slot, headers)

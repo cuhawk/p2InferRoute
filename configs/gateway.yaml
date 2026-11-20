@@ -9,6 +9,8 @@ gateway:
   port: 8000
   request_timeout_s: 120
   ttft_timeout_s: 60
+  slo_ttft_ms: 250
+  slo_tpot_ms: 40
   max_concurrent_inference: 16
   max_queue_depth: 64
   default_max_tokens: 512
@@ -47,6 +49,8 @@ routing:
   default_strategy: task_aware
   balanced_weights: { latency: 0.4, cost: 0.3, quality: 0.3 }
   max_fallbacks: 2
+  affinity_max_inflight_per_worker: 4
+  affinity_max_entries: 8192
   latency_ewma_alpha: 0.3
   task_profiles:
     coding:
