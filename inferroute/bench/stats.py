@@ -7,10 +7,10 @@ documented here and used consistently across every artifact.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 
 
-def percentile(values: Sequence[float], p: float) -> float:
+def percentile(values: Collection[float], p: float) -> float:
     """Linear-interpolation percentile (p in [0, 100]) over an ascending-sorted list."""
     if not values:
         raise ValueError("percentile of empty sequence")

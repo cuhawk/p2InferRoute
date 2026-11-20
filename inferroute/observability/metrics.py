@@ -6,10 +6,14 @@ instances (tests, benchmarks) don't collide. ``/metrics`` renders the instance r
 
 from __future__ import annotations
 
+from collections import deque
+from functools import partial
 from typing import Any
 
 from prometheus_client import CollectorRegistry, Gauge, Histogram, generate_latest
 from prometheus_client.metrics import Counter, MetricWrapperBase
+
+from inferroute.bench.stats import percentile
 
 _BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0)
 _TTFT_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8)
@@ -55,6 +59,40 @@ class GatewayMetrics:
             "Inter-token latency for streamed responses.",
             labelnames=["provider", "model"],
             buckets=_ITL_BUCKETS,
+            registry=self.registry,
+        )
+        self.stream_ttft = Histogram(
+            "inferroute_stream_ttft_seconds",
+            "Gateway time from request ingress to the first SSE output delta.",
+            labelnames=["provider", "model"],
+            buckets=_TTFT_BUCKETS,
+            registry=self.registry,
+        )
+        self._stream_ttft_samples: dict[tuple[str, str], deque[float]] = {}
+        self.stream_ttft_quantiles = Gauge(
+            "inferroute_stream_ttft_quantile_seconds",
+            "Empirical TTFT quantiles of the last 1024 completed streams per provider and model.",
+            labelnames=["provider", "model", "quantile"],
+            registry=self.registry,
+        )
+        self.stream_inter_delta = Histogram(
+            "inferroute_stream_inter_delta_seconds",
+            "Time between output deltas when token boundaries are unknown.",
+            labelnames=["provider", "model"],
+            buckets=_ITL_BUCKETS,
+            registry=self.registry,
+        )
+        self.stream_tpot = Histogram(
+            "inferroute_stream_tpot_seconds",
+            "Mean time per output token for completed streams.",
+            labelnames=["provider", "model", "source"],
+            buckets=_ITL_BUCKETS,
+            registry=self.registry,
+        )
+        self.stream_slo_met = Counter(
+            "inferroute_stream_slo_met_total",
+            "Completed streams meeting both TTFT and TPOT objectives.",
+            labelnames=["provider", "model"],
             registry=self.registry,
         )
         self.tokens_total = Counter(
@@ -172,6 +210,19 @@ class GatewayMetrics:
             labelnames=["gpu"],
             registry=self.registry,
         )
+
+    def observe_stream_ttft(self, provider: str, model: str, seconds: float) -> None:
+        self.stream_ttft.labels(provider, model).observe(seconds)
+        key = (provider, model)
+        samples = self._stream_ttft_samples.get(key)
+        if samples is None:
+            samples = self._stream_ttft_samples[key] = deque(maxlen=1024)
+            samples.append(seconds)
+            for p in (50, 95, 99):
+                metric = self.stream_ttft_quantiles.labels(provider, model, str(p / 100))
+                metric.set_function(partial(percentile, samples, p))
+        else:
+            samples.append(seconds)
 
     def render(self) -> bytes:
         return generate_latest(self.registry)

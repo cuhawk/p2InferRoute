@@ -233,6 +233,7 @@ class OpenAICompatProvider(InferenceProvider):
             body["stream_options"] = {"include_usage": True}
         started = time.perf_counter()
         ttft_emitted = False
+        finished = False
         try:
             async with self._client.stream("POST", "/chat/completions", json=body) as resp:
                 if resp.status_code >= 400:
@@ -245,21 +246,32 @@ class OpenAICompatProvider(InferenceProvider):
                         continue
                     data = line[len("data:") :].strip()
                     if data == "[DONE]":
+                        finished = True
                         break
                     try:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         logger.warning("dropping unparseable SSE chunk from %s", self.name)
                         continue
+                    if chunk.get("error"):
+                        raise ProviderError(self.name, "upstream SSE error", retryable=False)
                     if isinstance(chunk.get("usage"), dict):
                         raw_u = chunk["usage"]
+                        details = raw_u.get("prompt_tokens_details")
+                        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+                        prompt = int(raw_u.get("prompt_tokens") or 0)
                         yield StreamEvent(
                             type="final_usage",
                             usage=Usage(
-                                int(raw_u.get("prompt_tokens") or 0),
+                                prompt,
                                 int(raw_u.get("completion_tokens") or 0),
                                 int(raw_u.get("total_tokens") or 0),
                                 estimated=False,
+                                cached_prompt_tokens=(
+                                    cached
+                                    if type(cached) is int and 0 <= cached <= prompt
+                                    else None
+                                ),
                             ),
                         )
                     for raw_choice in chunk.get("choices", []):
@@ -274,7 +286,12 @@ class OpenAICompatProvider(InferenceProvider):
                                 ttft_emitted = True
                             yield ev
                         if finish:
+                            finished = True
                             yield StreamEvent(type="final", finish_reason=finish)
+                if not finished:
+                    raise ProviderError(
+                        self.name, "upstream SSE ended before completion", retryable=True
+                    )
         except httpx.TimeoutException as exc:
             raise self._map_transport_error(self.name, exc) from exc
         except httpx.HTTPError as exc:

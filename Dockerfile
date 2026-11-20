@@ -26,13 +26,14 @@ RUN uv sync --frozen --no-install-project --no-dev && uv sync --frozen --no-dev
 FROM python:3.12-slim
 
 WORKDIR /app
-RUN groupadd -r inferroute && useradd -r -g inferroute inferroute
+RUN groupadd -r inferroute && useradd -r -g inferroute inferroute \
+    && install -d -o inferroute -g inferroute /app/data
 
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/inferroute ./inferroute
-COPY --from=builder /app/configs ./configs
-COPY --from=builder /app/dashboard ./dashboard
-COPY --from=builder /app/pyproject.toml uv.lock LICENSE README.md ./
+COPY --chown=inferroute:inferroute --from=builder /app/.venv /app/.venv
+COPY --chown=inferroute:inferroute --from=builder /app/inferroute ./inferroute
+COPY --chown=inferroute:inferroute configs ./configs
+COPY --chown=inferroute:inferroute dashboard ./dashboard
+COPY pyproject.toml uv.lock LICENSE README.md ./
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1

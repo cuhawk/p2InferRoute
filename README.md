@@ -146,6 +146,13 @@ Point a real backend at it: enable `llama-cpp-local` or `vllm-local` in
 --port 8001`); the registry, router, fallbacks and benchmarks work
 unchanged.
 
+## Streaming and replica routing
+
+- Completed SSE responses include `inferroute.stream_telemetry`. TTFT is measured from gateway ingress to the first content or tool-call delta. ITL uses consecutive token timestamps when the provider exposes single-token boundaries. Other backends expose inter-delta latency and use reported completion tokens to compute TPOT from the first and last output deltas. Single-token completions have zero TPOT.
+- Prometheus exposes empirical TTFT p50/p95/p99 over the last 1,024 completed streams per provider and model. SLO goodput in requests per second is `sum(rate(inferroute_stream_slo_met_total[5m]))`. Set `gateway.slo_ttft_ms` and `gateway.slo_tpot_ms` to define the two inclusive limits.
+- Set `route.strategy: prefix_affinity` and assign interchangeable replica models a common `replica_group` and `served_model_name`. The gateway uses rendezvous hashing for cold prefixes and prefers the longest known message prefix for warm requests. At the per-worker in-flight threshold it prefers another available replica. If every replica is above the threshold, it chooses the least loaded one. Affinity state is bounded and local to each gateway process.
+- Automatic non-streaming requests with `response_format.type: json_schema` and `json_schema.strict: true` enter the schema cascade. The fastest eligible model in the lowest quality tier goes first. Invalid JSON or schema-invalid output advances to a higher tier within the fallback budget. The gateway validates against JSON Schema Draft 2020-12. Explicit models stay pinned, and an exhausted validation chain returns HTTP 502.
+
 ## Measured results
 
 Measured on the author's machine — AMD Ryzen AI 9 HX 370 (24 logical
@@ -189,6 +196,17 @@ within ±70 ms of each other — both arms queue behind reasoner-speed
 requests). Error rate (0.0) and estimated cost ($0, all local) identical.
 Conclusion: **routing wins mean latency and TTFT on this measured
 workload; no claim is made about tails.**
+
+### Wave 5 SSE routing A/B
+
+Observed on two live llama.cpp CPU replicas running SmolLM2-135M Q4_K_M. Each arm used 64 streaming requests, concurrency 4, and TTFT and TPOT SLOs of 400 ms and 150 ms.
+
+| Policy | KV cache hit rate | TTFT p50 (ms) | TTFT p95 (ms) | TTFT p99 (ms) | Mean TPOT (ms) | SLO goodput (req/s) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| round_robin | 46.74% | 1262.55 | 2330.90 | 2992.43 | 50.30 | 0.42 |
+| prefix_affinity | 55.76% | 1170.71 | 2272.40 | 2281.05 | 29.33 | 0.41 |
+
+[Benchmark methodology and reproduction](benchmarks/RESULTS.md)
 
 ## Project layout
 
